@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Watch TOTP Manager</title>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/argon2-browser/1.18.0/argon2-bundled.min.js"
+		integrity="sha512-Alrh8vbmKDc5xiq7I/y8LTDwy9nw1nT9S/yR73HMMoWrpX4S1kizNPdWM896c/CDIGILNwAiaih627A94kRhYQ=="
+		crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+	<script src="https://unpkg.com/node-forge@1.0.0/dist/forge.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+        background: #f2f4f7;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+      }
+      .card {
+        background: white;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+        max-width: 720px;
+        margin: 0 auto 16px;
+        width: 100%;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      input {
+        width: 100%;
+        padding: 10px 12px;
+        margin: 6px 0 12px;
+        border-radius: 8px;
+        border: 1px solid #d0d5dd;
+      }
+      button {
+        padding: 8px 12px;
+        margin-right: 6px;
+        border: none;
+        border-radius: 8px;
+        background: #2f7d32;
+        color: white;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #64748b;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .avatar-row {
+        align-items: center;
+      }
+      .avatar-preview {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        background: #e2e8f0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .avatar-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .avatar-default {
+        font-size: 12px;
+        color: #475569;
+        text-align: center;
+        padding: 0 6px;
+      }
+      .label {
+        font-size: 12px;
+        color: #475569;
+        margin-bottom: 4px;
+      }
+      .item {
+        border: 1px solid #e2e8f0;
+        padding: 12px;
+        border-radius: 10px;
+        margin-bottom: 10px;
+      }
+      .item div {
+        word-break: break-word;
+      }
+      .item h3 {
+        margin: 0 0 6px 0;
+      }
+      .error {
+        color: #b42318;
+      }
+      .status {
+        font-size: 12px;
+        color: #0f172a;
+        margin-top: 6px;
+      }
+      .status.error {
+        color: #b42318;
+      }
+      .status.ok {
+        color: #166534;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Watch TOTP Manager</h1>
+      <div id="error" class="error"></div>
+      <h3>Add or edit account</h3>
+      <input id="provider" placeholder="Provider" />
+      <input id="account" placeholder="Account (optional)" />
+      <input id="secret" placeholder="Base32 secret" />
+      <div class="row avatar-row">
+        <div class="avatar-preview" id="avatarPreview">
+          <div class="avatar-default">Default</div>
+        </div>
+        <div style="flex: 1; min-width: 200px;">
+          <div class="label">Avatar</div>
+          <input id="avatar" type="file" accept="image/*" />
+          <button class="secondary" onclick="clearAvatar()">Clear avatar</button>
+        </div>
+      </div>
+      <div style="margin-bottom: 12px;"></div>
+      <div class="row">
+        <button onclick="saveAccount()">Save</button>
+        <button class="secondary" onclick="resetForm()">Clear</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Import Stratum backup</h3>
+      <div class="label">Encrypted .authpro or decrypted JSON backup</div>
+      <div class="label">Only TOTP (SHA-1) items are supported; others are skipped.</div>
+      <input id="backupFile" type="file" accept=".authpro,.stratum,.json,application/json" />
+      <div class="label">Password (required for encrypted backups)</div>
+      <input id="backupPassword" type="password" placeholder="Backup password" />
+      <div class="row">
+        <button onclick="importStratumBackup()">Import backup</button>
+      </div>
+      <div id="importStatus" class="status"></div>
+    </div>
+
+    <div class="card">
+      <h3>Accounts</h3>
+      <div id="list"></div>
+    </div>
+
+    <script>
+      let editingId = null;
+      let avatarData = null;
+      const avatarInput = document.getElementById('avatar');
+      const providerInput = document.getElementById('provider');
+      const accountInput = document.getElementById('account');
+      const backupInput = document.getElementById('backupFile');
+      const backupPasswordInput = document.getElementById('backupPassword');
+      const importStatus = document.getElementById('importStatus');
+
+      async function loadAccounts() {
+        const res = await fetch('/api/accounts');
+        const data = await res.json();
+        const list = document.getElementById('list');
+        list.innerHTML = '';
+        data.forEach((item, index) => {
+          const provider = item.provider || item.name || '';
+          const accountName = item.account || '';
+          const isFirst = index === 0;
+          const isLast = index === data.length - 1;
+          const div = document.createElement('div');
+          div.className = 'item';
+          div.innerHTML = `
+            <h3>${provider || 'Account'}</h3>
+            <div>${accountName}</div>
+            <div>${item.secret}</div>
+            <div class="row" style="margin-top:8px;">
+              <button class="secondary" onclick="moveAccount('${item.id}', 'up')" ${
+                isFirst ? 'disabled' : ''
+              }>Up</button>
+              <button class="secondary" onclick="moveAccount('${item.id}', 'down')" ${
+                isLast ? 'disabled' : ''
+              }>Down</button>
+              <button onclick="editAccount('${item.id}')">Edit</button>
+              <button class="secondary" onclick="deleteAccount('${item.id}')">Delete</button>
+            </div>
+          `;
+          list.appendChild(div);
+        });
+      }
+
+      function resetForm() {
+        editingId = null;
+        providerInput.value = '';
+        accountInput.value = '';
+        document.getElementById('secret').value = '';
+        avatarData = null;
+        avatarInput.value = '';
+        updateAvatarPreview();
+      }
+
+      function setImportStatus(message, level) {
+        importStatus.textContent = message;
+        importStatus.className = 'status' + (level ? ' ' + level : '');
+      }
+
+      async function saveAccount() {
+        const provider = providerInput.value.trim();
+        const accountName = accountInput.value.trim();
+        const secret = document.getElementById('secret').value.trim();
+        if (!provider || !secret) {
+          showError('Provider and secret required');
+          return;
+        }
+        const payload = {
+          provider,
+          account: accountName,
+          secret,
+          avatar: avatarData,
+        };
+        const method = editingId ? 'PUT' : 'POST';
+        const url = editingId ? `/api/accounts/${editingId}` : '/api/accounts';
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          showError('Save failed');
+          return;
+        }
+        resetForm();
+        await loadAccounts();
+      }
+
+      async function editAccount(id) {
+        const res = await fetch('/api/accounts');
+        const data = await res.json();
+        const item = data.find((a) => a.id === id);
+        if (!item) return;
+        editingId = id;
+        providerInput.value = item.provider || item.name || '';
+        accountInput.value = item.account || '';
+        document.getElementById('secret').value = item.secret;
+        avatarData = item.avatar || null;
+        avatarInput.value = '';
+        updateAvatarPreview();
+      }
+
+      async function deleteAccount(id) {
+        await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+        await loadAccounts();
+      }
+
+      async function moveAccount(id, direction) {
+        await fetch('/api/accounts/reorder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, direction }),
+        });
+        await loadAccounts();
+      }
+
+      function showError(message) {
+        const error = document.getElementById('error');
+        error.textContent = message;
+        setTimeout(() => (error.textContent = ''), 3000);
+      }
+
+      function updateAvatarPreview() {
+        const preview = document.getElementById('avatarPreview');
+        if (avatarData) {
+          preview.innerHTML = `<img src="${avatarData}" alt="Avatar" />`;
+          return;
+        }
+        preview.innerHTML = '<div class="avatar-default">Default</div>';
+      }
+
+      function clearAvatar() {
+        avatarData = null;
+        avatarInput.value = '';
+        updateAvatarPreview();
+      }
+
+      function readFileAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function readFileAsArrayBuffer(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsArrayBuffer(file);
+        });
+      }
+
+      function readBlobAsDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Failed to read blob'));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      function bytesToString(bytes) {
+        return new TextDecoder('utf-8').decode(bytes);
+      }
+
+      function stringToBytes(text) {
+        return new TextEncoder().encode(text);
+      }
+
+      function getHeaderString(bytes, length) {
+        return bytesToString(bytes.slice(0, length));
+      }
+
+      function stripPkcs7(bytes) {
+        if (!bytes.length) return bytes;
+        const pad = bytes[bytes.length - 1];
+        if (pad <= 0 || pad > 16) return bytes;
+        for (let i = 1; i <= pad; i += 1) {
+          if (bytes[bytes.length - i] !== pad) {
+            return bytes;
+          }
+        }
+        return bytes.slice(0, bytes.length - pad);
+      }
+
+      function hasWebCrypto() {
+        return !!(window.crypto && window.crypto.subtle);
+      }
+
+      function getCryptoSubtle() {
+        const cryptoApi = window.crypto && window.crypto.subtle;
+        if (cryptoApi) return cryptoApi;
+        throw new Error('Web Crypto not available in this context.');
+      }
+
+      function getForge() {
+        if (window.forge) return window.forge;
+        throw new Error('forge library not available for crypto fallback.');
+      }
+
+      function bytesToHex(bytes) {
+        let result = '';
+        for (let i = 0; i < bytes.length; i += 1) {
+          result += bytes[i].toString(16).padStart(2, '0');
+        }
+        return result;
+      }
+
+      function hexToBytes(hex) {
+        const length = hex.length / 2;
+        const out = new Uint8Array(length);
+        for (let i = 0; i < length; i += 1) {
+          out[i] = parseInt(hex.substr(i * 2, 2), 16);
+        }
+        return out;
+      }
+
+      function bytesToForgeBytes(bytes) {
+        const forge = getForge();
+        return forge.util.hexToBytes(bytesToHex(bytes));
+      }
+
+      function forgeBytesToUint8Array(forgeBytes) {
+        const forge = getForge();
+        return hexToBytes(forge.util.bytesToHex(forgeBytes));
+      }
+
+      async function deriveArgon2Key(password, salt) {
+        const result = await argon2.hash({
+          pass: password,
+          salt,
+          time: 3,
+          mem: 65536,
+          hashLen: 32,
+          parallelism: 4,
+          type: argon2.ArgonType.Argon2id,
+        });
+        return result.hash;
+      }
+
+      async function deriveLegacyKey(passwordBytes, salt) {
+        if (hasWebCrypto()) {
+          const subtle = getCryptoSubtle();
+          const baseKey = await subtle.importKey(
+            'raw',
+            passwordBytes,
+            'PBKDF2',
+            false,
+            ['deriveBits'],
+          );
+          const bits = await subtle.deriveBits(
+            {
+              name: 'PBKDF2',
+              salt,
+              iterations: 64000,
+              hash: 'SHA-1',
+            },
+            baseKey,
+            256,
+          );
+          return new Uint8Array(bits);
+        }
+        const forge = getForge();
+        const saltBytes = bytesToForgeBytes(salt);
+        const keyBytes = forge.pkcs5.pbkdf2(
+          bytesToString(passwordBytes),
+          saltBytes,
+          64000,
+          32,
+          forge.md.sha1.create(),
+        );
+        return forgeBytesToUint8Array(keyBytes);
+      }
+
+      async function decryptStrong(bytes, password) {
+        const headerLength = 16;
+        const saltLength = 16;
+        const ivLength = 12;
+        const salt = bytes.slice(headerLength, headerLength + saltLength);
+        const iv = bytes.slice(
+          headerLength + saltLength,
+          headerLength + saltLength + ivLength,
+        );
+        const payload = bytes.slice(headerLength + saltLength + ivLength);
+        const keyBytes = await deriveArgon2Key(password, salt);
+        if (hasWebCrypto()) {
+          const subtle = getCryptoSubtle();
+          const key = await subtle.importKey(
+            'raw',
+            keyBytes,
+            'AES-GCM',
+            false,
+            ['decrypt'],
+          );
+          const decrypted = await subtle.decrypt(
+            { name: 'AES-GCM', iv },
+            key,
+            payload,
+          );
+          return new Uint8Array(decrypted);
+        }
+        if (payload.length <= 16) {
+          throw new Error('Encrypted payload is too small');
+        }
+        const tag = payload.slice(payload.length - 16);
+        const ciphertext = payload.slice(0, payload.length - 16);
+        const forge = getForge();
+        const decipher = forge.cipher.createDecipher(
+          'AES-GCM',
+          bytesToForgeBytes(keyBytes),
+        );
+        decipher.start({
+          iv: bytesToForgeBytes(iv),
+          tagLength: 128,
+          tag: bytesToForgeBytes(tag),
+        });
+        decipher.update(forge.util.createBuffer(bytesToForgeBytes(ciphertext)));
+        if (!decipher.finish()) {
+          throw new Error('Failed to decrypt backup');
+        }
+        return forgeBytesToUint8Array(decipher.output.getBytes());
+      }
+
+      async function decryptLegacy(bytes, password) {
+        const headerLength = 16;
+        const saltLength = 20;
+        const ivLength = 16;
+        const salt = bytes.slice(headerLength, headerLength + saltLength);
+        const iv = bytes.slice(
+          headerLength + saltLength,
+          headerLength + saltLength + ivLength,
+        );
+        const payload = bytes.slice(headerLength + saltLength + ivLength);
+        const passwordBytes = stringToBytes(password);
+        const keyBytes = await deriveLegacyKey(passwordBytes, salt);
+        if (hasWebCrypto()) {
+          const subtle = getCryptoSubtle();
+          const key = await subtle.importKey(
+            'raw',
+            keyBytes,
+            'AES-CBC',
+            false,
+            ['decrypt'],
+          );
+          const decrypted = await subtle.decrypt(
+            { name: 'AES-CBC', iv },
+            key,
+            payload,
+          );
+          return stripPkcs7(new Uint8Array(decrypted));
+        }
+        const forge = getForge();
+        const decipher = forge.cipher.createDecipher(
+          'AES-CBC',
+          bytesToForgeBytes(keyBytes),
+        );
+        decipher.start({ iv: bytesToForgeBytes(iv) });
+        decipher.update(forge.util.createBuffer(bytesToForgeBytes(payload)));
+        if (!decipher.finish()) {
+          throw new Error('Failed to decrypt backup');
+        }
+        return forgeBytesToUint8Array(decipher.output.getBytes());
+      }
+
+      async function decodeBackup(arrayBuffer, password) {
+        const bytes = new Uint8Array(arrayBuffer);
+        if (bytes.length < 16) {
+          throw new Error('Backup file is too small');
+        }
+        const header = getHeaderString(bytes, 16);
+        let jsonBytes = null;
+        if (header === 'AUTHENTICATORPRO') {
+          if (!password) {
+            throw new Error('Password required for encrypted backup');
+          }
+          jsonBytes = await decryptStrong(bytes, password);
+        } else if (header === 'AuthenticatorPro') {
+          if (!password) {
+            throw new Error('Password required for encrypted backup');
+          }
+          jsonBytes = await decryptLegacy(bytes, password);
+        } else {
+          jsonBytes = bytes;
+        }
+        const jsonText = bytesToString(jsonBytes).trim();
+        return JSON.parse(jsonText);
+      }
+
+      function escapeXml(text) {
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+      }
+
+      function hashToColor(text) {
+        let hash = 0;
+        for (let i = 0; i < text.length; i += 1) {
+          hash = (hash << 5) - hash + text.charCodeAt(i);
+          hash |= 0;
+        }
+        const hue = Math.abs(hash) % 360;
+        return `hsl(${hue},55%,55%)`;
+      }
+
+      function buildSvgAvatarDataUrl(text, seed) {
+        const cleaned = (text || '?').trim();
+        const label = cleaned ? cleaned.slice(0, 2).toUpperCase() : '?';
+        const color = hashToColor(seed || cleaned || label);
+        const svg = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">
+            <rect width="128" height="128" rx="64" fill="${color}" />
+            <text x="50%" y="54%" font-size="48" text-anchor="middle" fill="#ffffff" font-family="Segoe UI, sans-serif" dy="12">
+              ${escapeXml(label)}
+            </text>
+          </svg>
+        `;
+        return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+      }
+
+      const iconCache = new Map();
+
+      async function fetchIconDataUrl(iconName) {
+        const cleaned = (iconName || '').trim();
+        if (!cleaned) return null;
+        if (iconCache.has(cleaned)) {
+          return iconCache.get(cleaned);
+        }
+        const hasExtension = cleaned.includes('.');
+        const filenames = hasExtension
+          ? [cleaned]
+          : [`${cleaned}.png`, `${cleaned}.webp`];
+        const bases = [
+          'https://raw.githubusercontent.com/stratumauth/app/master/icons/',
+          'https://raw.githubusercontent.com/stratumauth/app/master/extraicons/',
+        ];
+        for (const base of bases) {
+          for (const filename of filenames) {
+            const url = `${base}${filename}`;
+            try {
+              const res = await fetch(url);
+              if (!res.ok) continue;
+              const blob = await res.blob();
+              const dataUrl = await readBlobAsDataUrl(blob);
+              iconCache.set(cleaned, dataUrl);
+              return dataUrl;
+            } catch (_) {
+              continue;
+            }
+          }
+        }
+        iconCache.set(cleaned, null);
+        return null;
+      }
+
+      async function resolveIcon(iconValue, customIcons, issuer) {
+        if (!iconValue) return null;
+        if (iconValue.startsWith('data:')) return iconValue;
+        if (iconValue.startsWith('@')) {
+          const iconId = iconValue.slice(1);
+          const data = customIcons.get(iconId);
+          if (!data) return null;
+          if (data.startsWith('data:')) return data;
+          return `data:image/png;base64,${data}`;
+        }
+        const fetched = await fetchIconDataUrl(iconValue);
+        if (fetched) return fetched;
+        return buildSvgAvatarDataUrl(iconValue, issuer || iconValue);
+      }
+
+      function normalizeAuthenticators(backup) {
+        return backup.Authenticators || backup.authenticators || [];
+      }
+
+      function normalizeCustomIcons(backup) {
+        const icons = backup.CustomIcons || backup.customIcons || [];
+        const map = new Map();
+        if (!Array.isArray(icons)) return map;
+        icons.forEach((icon) => {
+          if (!icon) return;
+          const id = icon.Id || icon.id;
+          const data = icon.Data || icon.data;
+          if (id && data) {
+            map.set(id, data);
+          }
+        });
+        return map;
+      }
+
+      async function mapStratumBackup(backup) {
+        const accounts = [];
+        const warnings = [];
+        const customIcons = normalizeCustomIcons(backup);
+        const authenticators = normalizeAuthenticators(backup);
+
+        if (!Array.isArray(authenticators)) {
+          return { accounts, warnings: ['Backup missing Authenticators list'] };
+        }
+
+        for (let index = 0; index < authenticators.length; index += 1) {
+          const auth = authenticators[index];
+          const type = auth?.Type ?? auth?.type;
+          const algorithm = auth?.Algorithm ?? auth?.algorithm ?? 0;
+          if (type !== 2) {
+            warnings.push(`Skipped item ${index + 1}: unsupported type`);
+            continue;
+          }
+          if (algorithm !== 0) {
+            warnings.push(`Skipped item ${index + 1}: unsupported algorithm`);
+            continue;
+          }
+          const issuer = (auth?.Issuer ?? auth?.issuer ?? '').trim();
+          const username = (auth?.Username ?? auth?.username ?? '').trim();
+          const secret = (auth?.Secret ?? auth?.secret ?? '').trim();
+          const digits = auth?.Digits ?? auth?.digits;
+          const period = auth?.Period ?? auth?.period;
+          const iconValue = auth?.Icon ?? auth?.icon;
+          const avatar = await resolveIcon(iconValue, customIcons, issuer || username);
+          if ((!issuer && !username) || !secret) {
+            warnings.push(`Skipped item ${index + 1}: missing name or secret`);
+            continue;
+          }
+          accounts.push({
+            provider: issuer,
+            account: username,
+            secret,
+            digits,
+            period,
+            avatar,
+          });
+        }
+
+        return { accounts, warnings };
+      }
+
+      async function importStratumBackup() {
+        const file = backupInput.files && backupInput.files[0];
+        if (!file) {
+          setImportStatus('Select a backup file to import', 'error');
+          return;
+        }
+        setImportStatus('Decrypting backup...', '');
+        let backup = null;
+        try {
+          const buffer = await readFileAsArrayBuffer(file);
+          backup = await decodeBackup(buffer, backupPasswordInput.value || '');
+        } catch (error) {
+          setImportStatus(error.message || 'Failed to decrypt backup', 'error');
+          return;
+        }
+
+        const mapped = await mapStratumBackup(backup);
+        if (!mapped.accounts.length) {
+          setImportStatus('No compatible TOTP accounts found', 'error');
+          return;
+        }
+
+        setImportStatus('Importing accounts...', '');
+        const res = await fetch('/api/import/stratum', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accounts: mapped.accounts,
+            replace: false,
+          }),
+        });
+        if (!res.ok) {
+          setImportStatus('Import failed', 'error');
+          return;
+        }
+        const result = await res.json();
+        const warnings = mapped.warnings || [];
+        let message = `Imported ${result.imported} account(s).`;
+        if (result.skipped) {
+          message += ` Skipped ${result.skipped}.`;
+        }
+        if (warnings.length) {
+          message += ` Notes: ${warnings.slice(0, 3).join(' | ')}`;
+          if (warnings.length > 3) message += ' ...';
+        }
+        setImportStatus(message, 'ok');
+        await loadAccounts();
+      }
+
+      avatarInput.addEventListener('change', async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) {
+          return;
+        }
+        try {
+          avatarData = await readFileAsDataUrl(file);
+          updateAvatarPreview();
+        } catch (error) {
+          showError('Avatar upload failed');
+        }
+      });
+
+      updateAvatarPreview();
+
+      loadAccounts();
+    </script>
+  </body>
+</html>

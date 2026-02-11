@@ -1,0 +1,33 @@
+name: watch_totp
+description: "A TOTP generator for wearable devices."
+publish_to: 'none'
+version: 0.1.1
+
+environment:
+  sdk: ^3.10.8
+
+dependencies:
+  flutter:
+    sdk: flutter
+  crypto: ^3.0.3
+  flutter_secure_storage: ^10.0.0
+  rotary_scrollbar: ^1.1.0
+  uuid: ^4.5.1
+  wear_plus: ^1.2.4
+  wearable_rotary: ^2.0.4
+  flutter_launcher_icons: "^0.14.4"
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/web_ui.html
+
+flutter_launcher_icons:
+  image_path: "assets/images/icon.png"
+  android: true
