@@ -1,4 +1,4 @@
-# watch_totp
+# Watch TOTP
 
 Watch-friendly TOTP generator with a lightweight web UI for managing accounts.
 
@@ -48,6 +48,12 @@ The web UI runs a small HTTP server on your watch and lets you manage accounts f
 ### Stratum import
 
 The web UI can import Stratum backups (`.authpro`, `.stratum`, or JSON). Only TOTP (SHA-1) entries are supported; other entry types are skipped.
+
+## Screenshots
+
+| Main codes | Accounts | Web UI | Import |
+| --- | --- | --- | --- |
+| ![Main codes](images/sc1.png) | ![Accounts](images/sc2.png) | ![Web UI](images/sc3.png) | ![Import](images/sc4.png) |
 
 ## Notes
 
